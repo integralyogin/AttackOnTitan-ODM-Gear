@@ -1,0 +1,1432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ODM Gear v3.2 - Extended City with Forest</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+        }
+
+        #gameContainer {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+
+        #instructions {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            z-index: 100;
+            background: rgba(0,0,0,0.8);
+            padding: 15px;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            z-index: 100;
+            pointer-events: none;
+        }
+
+        #crosshair::before,
+        #crosshair::after {
+            content: '';
+            position: absolute;
+            background: white;
+        }
+
+        #crosshair::before {
+            width: 2px;
+            height: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+
+        #crosshair::after {
+            width: 20px;
+            height: 2px;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+
+        #stats {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: white;
+            z-index: 100;
+            background: rgba(0,0,0,0.8);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 12px;
+        }
+
+        #odmStats {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            color: white;
+            z-index: 100;
+            background: rgba(0,0,0,0.8);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 12px;
+        }
+
+        .swingIndicator {
+            color: #ffaa00;
+            font-weight: bold;
+        }
+
+        .vaultReady {
+            color: #00ff00;
+            font-weight: bold;
+            text-shadow: 0 0 5px #00ff00;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <div id="instructions">
+            <strong>ODM Gear Controls:</strong><br>
+            WASD - Move (3x speed)<br>
+            Mouse - Look around<br>
+            <span style="color: #ffaa00;">Hold Left Click - Left Hook & Smart Retract</span><br>
+            <span style="color: #ffaa00;">Hold Right Click - Right Hook & Smart Retract</span><br>
+            <span style="color: #ffaa00;">Release Click - Release Hook</span><br>
+            Space - Jump / Gas Boost<br>
+            <span style="color: #ffaa00;">A/D while hooked - Swing around (uses gas)</span><br>
+            <span style="color: #88ff88;">NEW: Extended City + Forest Area!</span><br>
+            <span style="color: #88ff88;">Explore the wilderness beyond the city!</span><br>
+            Click to lock mouse cursor
+        </div>
+
+        <div id="crosshair"></div>
+
+        <div id="stats">
+            Position: <span id="position">0, 0, 0</span><br>
+            FPS: <span id="fps">0</span><br>
+            Speed: <span id="speed">0</span><br>
+            Height: <span id="height">0</span>m<br>
+            Surface: <span id="surface">Ground</span>
+        </div>
+
+        <div id="odmStats">
+            Left Hook: <span id="leftHook">Ready</span><br>
+            Right Hook: <span id="rightHook">Ready</span><br>
+            Left Cord: <span id="leftCord">--</span>m<br>
+            Right Cord: <span id="rightCord">--</span>m<br>
+            Gas: <span id="gas">100%</span><br>
+            <span id="swingMode" class="swingIndicator"></span>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // Game variables
+        let scene, camera, renderer;
+        let moon; // NEW VARIABLE FOR THE MOON
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+        let velocity = new THREE.Vector3();
+        let direction = new THREE.Vector3();
+        let prevTime = performance.now();
+        let raycaster = new THREE.Raycaster();
+        let objects = [];
+        let buildings = [];
+        let trees = []; // NEW: Array for trees
+        let collisionObjects = []; // Separate array for collision detection
+        let domeNodes = []; // Geodesic dome connection points
+        let isOnGround = false;
+        let currentSurface = 'Ground';
+        let lastBoostTime = 0; // For boost cooldown
+    
+        // Mouse controls
+        let isPointerLocked = false;
+        let pitchObject = new THREE.Object3D();
+        let yawObject = new THREE.Object3D();
+        
+        // Mouse button states
+        let leftMouseDown = false;
+        let rightMouseDown = false;
+        
+        // Constants
+        const GRAVITY = 40;
+        const WALK_SPEED = 120;
+        const JUMP_FORCE = 30;
+        const AIR_JUMP_FORCE = 25;
+        const PLAYER_HEIGHT = 1.8;
+        const PLAYER_RADIUS = 0.4; // Player collision radius
+        const HOOK_PULL_FORCE = 150;
+        const SWING_FORCE = 120; // Lateral force for swinging
+        const SWING_GAS_COST = 0.5; // Gas cost per frame while swinging
+        
+        // Air Physics Constants
+        const GROUND_FRICTION = 10.0; // Damping when on ground (higher = more friction)
+        const AIR_RESISTANCE = 0.6; // Damping when in air (lower = less resistance, more momentum preservation)
+        const AIR_CONTROL = 0.4; // Movement control multiplier when airborne (0.0 = no control, 1.0 = full control)
+        
+        // Hook & Gas Constants
+        const HOOK_RANGE = 150; // Maximum hook range - increased for dome
+        const GAS_REGEN_RATE = 0.2; // Gas regeneration per frame
+        const JUMP_GAS_COST = 2; // Gas cost for ground jump
+        const AIR_JUMP_GAS_COST = 10; // Gas cost for air jump
+        const HOOK_GAS_COST = 5; // Gas cost per hook shot
+        const JUMP_VELOCITY_THRESHOLD = 5; // Minimum upward velocity to escape rooftop collision
+        const RETRACT_SPEED_THRESHOLD = 30; // Don't retract if moving faster than this (safety)
+        const RETRACT_DELAY = 0.5; // Seconds to hold before auto-retraction starts
+        const HOOK_COOLDOWN_DURATION = 1350; // 1.5 second cooldown
+
+        // Gas Boost Constants
+        const GAS_BOOST_FORCE = 15; // Upward force from gas boost
+        const GAS_BOOST_COST = 8; // Gas cost per boost
+        const POLE_VAULT_MULTIPLIER = 2.8; // Extra boost when conditions are perfect
+        
+        // SUPER GENEROUS POLE VAULT CONDITIONS - Make it easy to trigger!
+        const POLE_VAULT_TENSION_THRESHOLD = 0.3; // Very low tension needed
+        const POLE_VAULT_SPEED_THRESHOLD = 3; // Very low speed needed
+        const SWING_TENSION_THRESHOLD = 0.1; // Your setting - much lower
+        const GROUND_SHOT_DISTANCE = 15; // Lower threshold for ground shots
+        const HIGH_SPEED_THRESHOLD = 10; // If moving fast, ignore other requirements
+        
+        // Dynamic cord physics
+        const CORD_TIGHTEN_RATE = 40; // How fast cord tightens during swings
+        const MIN_CORD_LENGTH = 8; // Minimum cord length
+        
+        // World Constants - OPTIMIZED!
+        const WORLD_SIZE = 1000; // Reduced world size for performance
+        const CITY_RADIUS = 150; // Smaller but still feels large
+        const FOREST_START_RADIUS = 180; // Trees start outside city
+        const DOME_RADIUS = 200; // Smaller dome
+        const DOME_NODE_SIZE = 6; // Smaller nodes
+        const DOME_DETAIL = 3; // Lower detail dome for performance
+    
+        // ODM Gear variables
+        let hooks = {
+            left: {
+                attached: false,
+                position: null,
+                line: null,
+                length: 0,
+                maxLength: 0,
+                naturalLength: 0,
+                object: null,
+                holdTime: 0,
+                isGroundShot: false,
+                cooldownUntil: 0 // NEW: Cooldown timer
+            },
+            right: {
+                attached: false,
+                position: null,
+                line: null,
+                length: 0,
+                maxLength: 0,
+                naturalLength: 0,
+                object: null,
+                holdTime: 0,
+                isGroundShot: false,
+                cooldownUntil: 0 // NEW: Cooldown timer
+            }
+        };
+        let gas = 100;
+        let hookRange = HOOK_RANGE;
+        let isSwinging = false;
+        let swingDirection = 0; // -1 for left, 1 for right
+    
+        // Initialize the game
+        function init() {
+            // Create scene
+            scene = new THREE.Scene();
+            // Set night-time background and aggressive fog for performance
+            scene.background = new THREE.Color(0x030014);
+            scene.fog = new THREE.Fog(scene.background, 50, 350); // Much more aggressive fog
+    
+            // Create camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, PLAYER_HEIGHT, 0);
+    
+            // Set up first-person controls structure
+            yawObject.add(pitchObject);
+            pitchObject.add(camera);
+            scene.add(yawObject);
+            yawObject.position.set(0, PLAYER_HEIGHT, 5);
+    
+            // Create renderer with performance optimizations
+            renderer = new THREE.WebGLRenderer({ 
+                antialias: false, // Disable antialiasing for performance
+                powerPreference: "high-performance"
+            });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = false; // Disable shadows for major performance boost
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); // Limit pixel ratio
+            document.getElementById('gameContainer').appendChild(renderer.domElement);
+    
+            // --- Simplified Lighting (No Shadows) ---
+            const ambientLight = new THREE.AmbientLight(0x404080, 0.4);
+            scene.add(ambientLight);
+
+            // Simple directional light without shadows
+            const moonlight = new THREE.DirectionalLight(0xaaccff, 0.6);
+            moonlight.position.set(-150, 240, -150);
+            // No shadow casting for performance
+            scene.add(moonlight);
+       
+            // Create ground with grid
+            createGround();
+    
+            // Create concentrated city buildings
+            createCityBuildings();
+            
+            // Create forest area outside the city
+            createForest();
+            
+            createRealisticMoon();
+            createStars();
+	
+            // Create geodesic dome
+            createGeodesicDome();
+    
+            // Set up event listeners
+            setupEventListeners();
+    
+            // Start the game loop
+            animate();
+        }
+
+        function createGround() {
+            // Main ground plane - much larger
+            const groundGeometry = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE);
+            
+            // Create a more natural ground texture
+            const canvas = document.createElement('canvas');
+            canvas.width = 512;
+            canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+            
+            // Base grass color
+            ctx.fillStyle = '#2d5a2d';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Add some texture variation
+            for (let i = 0; i < 5000; i++) {
+                const x = Math.random() * canvas.width;
+                const y = Math.random() * canvas.height;
+                const shade = Math.random() * 0.3;
+                ctx.fillStyle = `rgba(${Math.floor(45 + shade * 100)}, ${Math.floor(90 + shade * 100)}, ${Math.floor(45 + shade * 50)}, 0.3)`;
+                ctx.fillRect(x, y, 2, 2);
+            }
+            
+            const groundTexture = new THREE.CanvasTexture(canvas);
+            groundTexture.wrapS = THREE.RepeatWrapping;
+            groundTexture.wrapT = THREE.RepeatWrapping;
+            groundTexture.repeat.set(20, 20);
+            
+            const groundMaterial = new THREE.MeshLambertMaterial({ map: groundTexture });
+            const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = 0;
+            ground.receiveShadow = true;
+            ground.userData = { type: 'ground' };
+            scene.add(ground);
+            objects.push(ground);
+            collisionObjects.push(ground);
+    
+            // Grid lines - much larger and less dense
+            const gridHelper = new THREE.GridHelper(WORLD_SIZE, 200, 0x000000, 0x000000);
+            gridHelper.position.y = 0.01;
+            gridHelper.material.opacity = 0.15;
+            gridHelper.material.transparent = true;
+            scene.add(gridHelper);
+        }
+    
+        function createCityBuildings() {
+            // Create fewer but still impressive buildings
+            const buildingCount = 25; // Reduced from 50
+            
+            for (let i = 0; i < buildingCount; i++) {
+                // Concentrate buildings in city center
+                const angle = Math.random() * Math.PI * 2;
+                const random = Math.random();
+                const distance = Math.pow(random, 2) * CITY_RADIUS;
+                
+                const x = Math.cos(angle) * distance + (Math.random() - 0.5) * 15;
+                const z = Math.sin(angle) * distance + (Math.random() - 0.5) * 15;
+                
+                // Simpler height calculation
+                const centerDistance = Math.sqrt(x*x + z*z);
+                const heightMultiplier = Math.max(0.4, 1 - (centerDistance / CITY_RADIUS));
+                const height = (30 + Math.random() * 80) * heightMultiplier; // Shorter buildings
+                const width = 6 + Math.random() * 8; // Smaller buildings
+                const depth = 6 + Math.random() * 8;
+    
+                const buildingGeometry = new THREE.BoxGeometry(width, height, depth);
+                
+                // Simpler materials
+                const buildingMaterial = new THREE.MeshLambertMaterial({ 
+                    color: new THREE.Color().setHSL(0.1, 0.3, 0.4 + Math.random() * 0.2)
+                });
+    
+                const building = new THREE.Mesh(buildingGeometry, buildingMaterial);
+                building.position.set(x, height / 2, z);
+                // No shadow casting for performance
+                building.userData = { 
+                    type: 'building', 
+                    width: width, 
+                    height: height, 
+                    depth: depth,
+                    name: `Building ${i + 1}`,
+                    biome: 'city'
+                };
+    
+                scene.add(building);
+                objects.push(building);
+                buildings.push(building);
+                collisionObjects.push(building);
+    
+                // Fewer, simpler windows
+                if (height > 20) { // Only add windows to taller buildings
+                    const windowGeometry = new THREE.PlaneGeometry(1, 1.5);
+                    
+                    for (let side = 0; side < 2; side++) { // Only 2 sides instead of 4
+                        for (let floor = 4; floor < height - 4; floor += 6) { // Fewer floors
+                            const windowMaterial = new THREE.MeshBasicMaterial({ 
+                                color: Math.random() > 0.5 ? 0xffff88 : 0x444444
+                            });
+                            
+                            const window = new THREE.Mesh(windowGeometry, windowMaterial);
+                            const angle = side * Math.PI;
+                            const sideDistance = width / 2 + 0.01;
+    
+                            window.position.set(
+                                x + Math.sin(angle) * sideDistance,
+                                floor,
+                                z + Math.cos(angle) * sideDistance
+                            );
+                            window.rotation.y = angle;
+                            scene.add(window);
+                        }
+                    }
+                }
+            }
+        }
+
+        function createForest() {
+            // Much fewer trees but still feels like a forest
+            const treeCount = 80; // Drastically reduced from 300
+            
+            for (let i = 0; i < treeCount; i++) {
+                // Random position outside city radius
+                let x, z, distanceFromCenter;
+                
+                do {
+                    const angle = Math.random() * Math.PI * 2;
+                    const distance = FOREST_START_RADIUS + Math.random() * (WORLD_SIZE/2 - FOREST_START_RADIUS);
+                    x = Math.cos(angle) * distance + (Math.random() - 0.5) * 40;
+                    z = Math.sin(angle) * distance + (Math.random() - 0.5) * 40;
+                    distanceFromCenter = Math.sqrt(x*x + z*z);
+                } while (distanceFromCenter < FOREST_START_RADIUS - 15);
+                
+                createTree(x, z);
+            }
+            
+            // Fewer scattered trees in city outskirts
+            for (let i = 0; i < 20; i++) { // Reduced from 50
+                const angle = Math.random() * Math.PI * 2;
+                const distance = CITY_RADIUS + Math.random() * (FOREST_START_RADIUS - CITY_RADIUS);
+                const x = Math.cos(angle) * distance + (Math.random() - 0.5) * 25;
+                const z = Math.sin(angle) * distance + (Math.random() - 0.5) * 25;
+                
+                // Only create if not too close to buildings
+                let tooClose = false;
+                for (let building of buildings) {
+                    if (building.userData.biome === 'city') {
+                        const dist = Math.sqrt((x - building.position.x)**2 + (z - building.position.z)**2);
+                        if (dist < 20) {
+                            tooClose = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!tooClose) {
+                    createTree(x, z);
+                }
+            }
+        }
+        
+        function createTree(x, z) {
+            // Random tree type
+            const treeType = Math.random();
+            
+            if (treeType < 0.4) {
+                // Pine/Coniferous tree
+                createPineTree(x, z);
+            } else if (treeType < 0.8) {
+                // Deciduous tree
+                createDeciduousTree(x, z);
+            } else {
+                // Dead/sparse tree
+                createDeadTree(x, z);
+            }
+        }
+        
+        function createPineTree(x, z) {
+            const trunkHeight = 12 + Math.random() * 15; // Shorter trees
+            const trunkRadius = 0.6 + Math.random() * 0.3;
+            
+            // Trunk
+            const trunkGeometry = new THREE.CylinderGeometry(trunkRadius, trunkRadius * 1.2, trunkHeight);
+            const trunkMaterial = new THREE.MeshLambertMaterial({ color: 0x4a3428 });
+            const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+            trunk.position.set(x, trunkHeight / 2, z);
+            // No shadows for performance
+            trunk.userData = { 
+                type: 'tree_trunk', 
+                height: trunkHeight, 
+                radius: trunkRadius,
+                treeType: 'pine'
+            };
+            
+            scene.add(trunk);
+            trees.push(trunk);
+            buildings.push(trunk);
+            collisionObjects.push(trunk);
+            
+            // Fewer pine layers
+            const layers = 2 + Math.floor(Math.random() * 2); // Reduced layers
+            for (let layer = 0; layer < layers; layer++) {
+                const layerY = trunkHeight * 0.4 + (layer / layers) * trunkHeight * 0.6;
+                const layerRadius = (2 + Math.random() * 1.5) * (1 - layer / layers * 0.5);
+                const layerHeight = 3 + Math.random() * 2;
+                
+                const foliageGeometry = new THREE.ConeGeometry(layerRadius, layerHeight, 6); // Lower detail
+                const foliageColor = new THREE.Color().setHSL(0.25 + Math.random() * 0.1, 0.6, 0.25);
+                const foliageMaterial = new THREE.MeshLambertMaterial({ color: foliageColor });
+                const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial);
+                foliage.position.set(x, layerY, z);
+                // No shadows
+                foliage.userData = { type: 'tree_foliage', treeType: 'pine' };
+                
+                scene.add(foliage);
+                trees.push(foliage);
+                buildings.push(foliage);
+            }
+        }
+        
+        function createDeciduousTree(x, z) {
+            const trunkHeight = 6 + Math.random() * 10; // Shorter
+            const trunkRadius = 0.5 + Math.random() * 0.2;
+            
+            // Trunk
+            const trunkGeometry = new THREE.CylinderGeometry(trunkRadius, trunkRadius * 1.2, trunkHeight);
+            const trunkMaterial = new THREE.MeshLambertMaterial({ color: 0x3d2f1f });
+            const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+            trunk.position.set(x, trunkHeight / 2, z);
+            trunk.userData = { 
+                type: 'tree_trunk', 
+                height: trunkHeight, 
+                radius: trunkRadius,
+                treeType: 'deciduous'
+            };
+            
+            scene.add(trunk);
+            trees.push(trunk);
+            buildings.push(trunk);
+            collisionObjects.push(trunk);
+            
+            // Simpler canopy
+            const canopyRadius = 3 + Math.random() * 2;
+            const canopyGeometry = new THREE.SphereGeometry(canopyRadius, 8, 6); // Lower detail
+            
+            // Autumn colors
+            const colorChoice = Math.random();
+            let canopyColor;
+            if (colorChoice < 0.3) {
+                canopyColor = new THREE.Color().setHSL(0.08, 0.8, 0.4); // Orange
+            } else if (colorChoice < 0.6) {
+                canopyColor = new THREE.Color().setHSL(0.15, 0.9, 0.5); // Yellow
+            } else {
+                canopyColor = new THREE.Color().setHSL(0.25, 0.5, 0.3); // Green
+            }
+            
+            const canopyMaterial = new THREE.MeshLambertMaterial({ color: canopyColor });
+            const canopy = new THREE.Mesh(canopyGeometry, canopyMaterial);
+            canopy.position.set(x, trunkHeight + canopyRadius * 0.5, z);
+            canopy.userData = { type: 'tree_foliage', treeType: 'deciduous' };
+            
+            scene.add(canopy);
+            trees.push(canopy);
+            buildings.push(canopy);
+        }
+        
+        function createDeadTree(x, z) {
+            const trunkHeight = 8 + Math.random() * 12; // Shorter
+            const trunkRadius = 0.3 + Math.random() * 0.15;
+            
+            // Trunk
+            const trunkGeometry = new THREE.CylinderGeometry(trunkRadius, trunkRadius * 1.1, trunkHeight);
+            const trunkMaterial = new THREE.MeshLambertMaterial({ color: 0x2c1810 });
+            const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+            trunk.position.set(x, trunkHeight / 2, z);
+            trunk.userData = { 
+                type: 'tree_trunk', 
+                height: trunkHeight, 
+                radius: trunkRadius,
+                treeType: 'dead'
+            };
+            
+            scene.add(trunk);
+            trees.push(trunk);
+            buildings.push(trunk);
+            collisionObjects.push(trunk);
+            
+            // Add fewer, simpler branches for performance
+            const branchCount = 2 + Math.floor(Math.random() * 2); // Fewer branches
+            for (let i = 0; i < branchCount; i++) {
+                const branchLength = 1.5 + Math.random() * 2;
+                const branchGeometry = new THREE.CylinderGeometry(0.08, 0.12, branchLength);
+                const branchMaterial = new THREE.MeshLambertMaterial({ color: 0x2c1810 });
+                const branch = new THREE.Mesh(branchGeometry, branchMaterial);
+                
+                const branchY = trunkHeight * (0.5 + Math.random() * 0.3);
+                const branchAngle = Math.random() * Math.PI * 2;
+                const branchTilt = Math.PI * 0.1 + Math.random() * Math.PI * 0.15;
+                
+                branch.position.set(
+                    x + Math.cos(branchAngle) * branchLength * 0.25,
+                    branchY,
+                    z + Math.sin(branchAngle) * branchLength * 0.25
+                );
+                branch.rotation.z = branchTilt;
+                branch.rotation.y = branchAngle;
+                branch.userData = { type: 'tree_branch', treeType: 'dead' };
+                
+                scene.add(branch);
+                trees.push(branch);
+                buildings.push(branch);
+            }
+	}
+                
+
+        function createRealisticMoon() {
+            // Much simpler moon for performance
+            const moonGeometry = new THREE.SphereGeometry(25, 16, 12); // Lower detail
+            const moonMaterial = new THREE.MeshLambertMaterial({
+                color: 0xf5f5dc,
+                emissive: new THREE.Color(0x111122),
+                emissiveIntensity: 0.03
+            });
+
+            moon = new THREE.Mesh(moonGeometry, moonMaterial);
+            moon.position.set(-150, 280, -150);
+            moon.userData = { type: 'moon', name: 'The Moon' };
+            scene.add(moon);
+            buildings.push(moon);
+        }
+
+        function createStars() {
+            const starVertices = [];
+            for (let i = 0; i < 3000; i++) { // Fewer stars
+                const x = THREE.MathUtils.randFloatSpread(WORLD_SIZE);
+                const y = THREE.MathUtils.randFloat(50, WORLD_SIZE / 3);
+                const z = THREE.MathUtils.randFloatSpread(WORLD_SIZE);
+                starVertices.push(x, y, z);
+            }
+
+            const starGeometry = new THREE.BufferGeometry();
+            starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
+
+            const starMaterial = new THREE.PointsMaterial({
+                color: 0xffffff,
+                size: 0.5,
+                transparent: true,
+                opacity: 0.6
+            });
+
+            const stars = new THREE.Points(starGeometry, starMaterial);
+            scene.add(stars);
+        }
+
+        function createGeodesicDome() {
+            // Much simpler dome for performance
+            const radius = DOME_RADIUS;
+            const detail = DOME_DETAIL;
+
+            // Fewer, simpler nodes
+            const nodeGeometry = new THREE.SphereGeometry(DOME_NODE_SIZE, 6, 4); // Lower detail
+            const nodeMaterial = new THREE.MeshLambertMaterial({
+                color: 0xeeeeee,
+                emissive: new THREE.Color(0x00ffff),
+                emissiveIntensity: 0.5
+            });
+
+            // Create fewer nodes in a simple pattern
+            const nodeCount = 12; // Much fewer nodes
+            for (let i = 0; i < nodeCount; i++) {
+                const angle = (i / nodeCount) * Math.PI * 2;
+                const x = Math.cos(angle) * radius * 0.8;
+                const z = Math.sin(angle) * radius * 0.8;
+                const y = 80 + Math.sin(angle * 2) * 30;
+
+                const node = new THREE.Mesh(nodeGeometry, nodeMaterial);
+                node.position.set(x, y, z);
+                node.userData = { type: 'domeNode' };
+                scene.add(node);
+                buildings.push(node);
+                domeNodes.push(node);
+            }
+
+            // Simple wireframe
+            const wireframeGeometry = new THREE.IcosahedronGeometry(radius, detail);
+            const wireframeMaterial = new THREE.MeshBasicMaterial({
+                color: 0x008888,
+                wireframe: true,
+                transparent: true,
+                opacity: 0.1
+            });
+
+            const wireframeDome = new THREE.Mesh(wireframeGeometry, wireframeMaterial);
+            wireframeDome.position.y = 50;
+            scene.add(wireframeDome);
+        }
+    
+        function setupEventListeners() {
+            // Mouse button events
+            document.addEventListener('mousedown', (event) => {
+                if (!isPointerLocked) {
+                    renderer.domElement.requestPointerLock();
+                } else {
+                    event.preventDefault();
+                    if (event.button === 0) {
+                        leftMouseDown = true;
+                        shootHook('left');
+                    } else if (event.button === 2) {
+                        rightMouseDown = true;
+                        shootHook('right');
+                    }
+                }
+            });
+
+            document.addEventListener('mouseup', (event) => {
+                if (isPointerLocked) {
+                    event.preventDefault();
+                    if (event.button === 0) {
+                        leftMouseDown = false;
+                        if (hooks.left.attached) {
+                            releaseHook('left');
+                        }
+                    } else if (event.button === 2) {
+                        rightMouseDown = false;
+                        if (hooks.right.attached) {
+                            releaseHook('right');
+                        }
+                    }
+                }
+            });
+
+            // Prevent context menu
+            document.addEventListener('contextmenu', (event) => {
+                event.preventDefault();
+            });
+    
+            document.addEventListener('pointerlockchange', () => {
+                isPointerLocked = document.pointerLockElement === renderer.domElement;
+            });
+    
+            // Mouse movement
+            document.addEventListener('mousemove', (event) => {
+                if (!isPointerLocked) return;
+    
+                const movementX = event.movementX || event.mozMovementX || event.webkitMovementX || 0;
+                const movementY = event.movementY || event.mozMovementY || event.webkitMovementY || 0;
+    
+                yawObject.rotation.y -= movementX * 0.002;
+                pitchObject.rotation.x -= movementY * 0.002;
+    
+                // Limit pitch
+                pitchObject.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitchObject.rotation.x));
+            });
+    
+            // Keyboard controls
+            document.addEventListener('keydown', (event) => {
+                switch (event.code) {
+                    case 'KeyW':
+                        moveForward = true;
+                        break;
+                    case 'KeyA':
+                        moveLeft = true;
+                        break;
+                    case 'KeyS':
+                        moveBackward = true;
+                        break;
+                    case 'KeyD':
+                        moveRight = true;
+                        break;
+                    case 'Space':
+                        event.preventDefault();
+                        jump();
+                        break;
+                }
+            });
+    
+            document.addEventListener('keyup', (event) => {
+                switch (event.code) {
+                    case 'KeyW':
+                        moveForward = false;
+                        break;
+                    case 'KeyA':
+                        moveLeft = false;
+                        break;
+                    case 'KeyS':
+                        moveBackward = false;
+                        break;
+                    case 'KeyD':
+                        moveRight = false;
+                        break;
+                }
+            });
+    
+            // Window resize
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+
+        function jump() {
+            const currentTime = performance.now();
+            
+            if (isOnGround) {
+                velocity.y = JUMP_FORCE;
+                gas -= JUMP_GAS_COST;
+                // Clear ground state to allow falling
+                isOnGround = false;
+                currentSurface = 'Air';
+            } else if (gas >= GAS_BOOST_COST && currentTime - lastBoostTime > 200) {
+                // Gas boost - fight against gravity
+                const hasAttachedHook = hooks.left.attached || hooks.right.attached;
+                
+                // Check for pole vault conditions - MOVED OUTSIDE isOnGround check!
+                let poleVaultBonus = 1.0;
+                let vaultReady = false;
+                
+                if (hasAttachedHook) {
+                    // SUPER SIMPLE TEST - If hooked and ANY movement at all
+                    const totalSpeed = Math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2);
+                    
+                    if (totalSpeed > 0.1) { // Almost any movement at all
+                        poleVaultBonus = POLE_VAULT_MULTIPLIER;
+                        vaultReady = true;
+                    }
+                    
+                    // Apply boost with potential pole vault bonus
+                    velocity.y += GAS_BOOST_FORCE * poleVaultBonus;
+                    gas -= GAS_BOOST_COST;
+                    
+                    // Visual feedback for successful pole vault
+                    if (vaultReady) {
+                        currentSurface = 'POLE VAULT! ⚡';
+                        setTimeout(() => {
+                            if (currentSurface === 'POLE VAULT! ⚡') currentSurface = 'Air';
+                        }, 1000);
+                    }
+                } else {
+                    // Regular air boost
+                    velocity.y += GAS_BOOST_FORCE * 0.6; // Reduced effectiveness without hooks
+                    gas -= GAS_BOOST_COST;
+                }
+                
+                lastBoostTime = currentTime;
+            }
+        }
+
+        function shootHook(side) {
+            const currentTime = performance.now();
+            
+            // --- DEBUG LOGS ---
+            console.log(`Trying to shoot ${side} hook. Current time: ${Math.round(currentTime)}`);
+            if (hooks[side].cooldownUntil > currentTime) {
+                console.error('Action blocked: Hook is on cooldown.'); // Use .error to make it stand out
+                return;
+            }
+
+            if (hooks[side].attached || gas <= 0) return;
+    
+            // Cast ray from camera 	
+            raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+            const intersects = raycaster.intersectObjects([...buildings, ...domeNodes, ...collisionObjects, ...trees]);
+    
+            if (intersects.length > 0) {
+                const intersection = intersects[0];
+                const distance = intersection.distance;
+    
+                if (distance <= hookRange) {
+                    console.log(`%cSuccessfully fired ${side} hook!`, 'color: lightgreen');
+                    hooks[side].attached = true;
+                    hooks[side].position = intersection.point.clone();
+                    hooks[side].length = distance;
+                    hooks[side].object = intersection.object;
+                    hooks[side].holdTime = 0; // Reset hold timer
+                    
+                    const hookPos = hooks[side].position;
+                    const playerPos = yawObject.position;
+                    const heightDifference = playerPos.y - hookPos.y;
+                    
+                    hooks[side].isGroundShot = intersection.object.userData.type === 'ground' || heightDifference > GROUND_SHOT_DISTANCE;
+                    
+                    if (hooks[side].isGroundShot) {
+                        hooks[side].naturalLength = Math.max(MIN_CORD_LENGTH, distance * 0.4);
+                    } else {
+                        hooks[side].naturalLength = Math.max(MIN_CORD_LENGTH, distance * 0.7);
+                    }
+                    
+                    hooks[side].maxLength = distance;
+    
+                    const lineGeometry = new THREE.BufferGeometry().setFromPoints([
+                        yawObject.position.clone(),
+                        hooks[side].position
+                    ]);
+                    const lineMaterial = new THREE.LineBasicMaterial({ 
+                        color: side === 'left' ? 0xff4444 : 0x44ff44,
+                        linewidth: 3
+                    });
+                    hooks[side].line = new THREE.Line(lineGeometry, lineMaterial);
+                    scene.add(hooks[side].line);
+    
+                    gas -= HOOK_GAS_COST;
+                    updateHookUI();
+                }
+            }
+        }
+
+        function releaseHook(side) {
+            if (hooks[side].attached) {
+                // Store current velocity before releasing to preserve momentum
+                const currentVelocity = velocity.clone();
+                
+                hooks[side].attached = false;
+                hooks[side].position = null;
+                hooks[side].length = 0;
+                hooks[side].maxLength = 0;
+                hooks[side].naturalLength = 0;
+                hooks[side].object = null;
+                hooks[side].holdTime = 0;
+                hooks[side].isGroundShot = false;
+                if (hooks[side].line) {
+                    scene.remove(hooks[side].line);
+                    hooks[side].line = null;
+                }
+
+                // Start the cooldown for this hook
+                hooks[side].cooldownUntil = performance.now() + HOOK_COOLDOWN_DURATION;
+                
+                // --- DEBUG LOG ---
+                console.log(`Releasing ${side} hook. Cooldown will end at timestamp: ${Math.round(hooks[side].cooldownUntil)}`);
+
+                // Only add upward boost if no hooks remain and not moving up much
+                if (!hooks.left.attached && !hooks.right.attached && currentVelocity.y < JUMP_VELOCITY_THRESHOLD) {
+                    velocity.y = Math.max(currentVelocity.y + 8, currentVelocity.y);
+                }
+                
+                // Check if still swinging with other hook
+                if (!hooks.left.attached && !hooks.right.attached) {
+                    isSwinging = false;
+                    swingDirection = 0;
+                }
+                
+                updateHookUI();
+            }
+        }    
+
+        function releaseHooks() {
+            // Store current velocity before releasing to preserve momentum
+            const currentVelocity = velocity.clone();
+
+            ['left', 'right'].forEach(side => {
+                if (hooks[side].attached) {
+                    hooks[side].attached = false;
+                    hooks[side].position = null;
+                    hooks[side].length = 0;
+                    hooks[side].maxLength = 0;
+                    hooks[side].naturalLength = 0;
+                    hooks[side].object = null;
+                    hooks[side].holdTime = 0;
+                    hooks[side].isGroundShot = false;
+                    if (hooks[side].line) {
+                        scene.remove(hooks[side].line);
+                        hooks[side].line = null;
+                    }
+                    // Start the cooldown for this hook
+                    hooks[side].cooldownUntil = performance.now() + HOOK_COOLDOWN_DURATION;
+                }
+            });
+
+            // Preserve horizontal momentum from swinging
+            // Only add upward boost if not already moving up significantly
+            if (currentVelocity.y < JUMP_VELOCITY_THRESHOLD) {
+                velocity.y = Math.max(currentVelocity.y + 8, currentVelocity.y);
+            } else {
+                // Keep the existing upward velocity
+                velocity.y = currentVelocity.y;
+            }
+
+            // Preserve horizontal velocity completely
+            velocity.x = currentVelocity.x;
+            velocity.z = currentVelocity.z;
+
+            isSwinging = false;
+            swingDirection = 0;
+            updateHookUI();
+        }
+
+        function updateHookUI() {
+            const getHookStatus = (side) => {
+                const currentTime = performance.now();
+                
+                // Show cooldown status if active
+                if (hooks[side].cooldownUntil > currentTime) {
+                    const cooldownLeft = (hooks[side].cooldownUntil - currentTime) / 1000;
+                    return `<span style="color: #ff8888;">Cooling (${cooldownLeft.toFixed(1)}s)</span>`;
+                }
+
+                if (!hooks[side].attached) return '<span style="color: #aaffaa;">Ready</span>';
+
+                const isHeld = (side === 'left' && leftMouseDown) || (side === 'right' && rightMouseDown);
+                if (!isHeld) return 'Attached';
+                
+                const currentSpeed = Math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2);
+                const shouldRetract = hooks[side].holdTime > RETRACT_DELAY && 
+                                      currentSpeed < RETRACT_SPEED_THRESHOLD &&
+                                      !isSwinging;
+                
+                if (shouldRetract) return 'Retracting';
+                if (isSwinging) return 'Swinging';
+                if (currentSpeed >= RETRACT_SPEED_THRESHOLD) return 'High Speed';
+                
+                // Vault Ready check
+                const totalSpeed = Math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2);
+                if (hooks[side].attached && totalSpeed > 0.1) {
+                    return '<span class="vaultReady">VAULT READY! ⚡</span>';
+                }
+                
+                const holdTimeLeft = RETRACT_DELAY - hooks[side].holdTime;
+                return `Holding (${holdTimeLeft.toFixed(1)}s)`;
+            };
+            
+            document.getElementById('leftHook').innerHTML = getHookStatus('left');
+            document.getElementById('rightHook').innerHTML = getHookStatus('right');
+            document.getElementById('leftCord').textContent = hooks.left.attached ? hooks.left.length.toFixed(1) : '--';
+            document.getElementById('rightCord').textContent = hooks.right.attached ? hooks.right.length.toFixed(1) : '--';
+            document.getElementById('gas').textContent = Math.round(gas) + '%';
+            document.getElementById('swingMode').textContent = isSwinging ? 
+                `Swinging ${swingDirection < 0 ? 'Left' : 'Right'}! Speed: ${Math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2).toFixed(1)}` : '';
+        }
+
+        function checkCollision(newPosition) {
+            const playerBounds = {
+                x: newPosition.x,
+                y: newPosition.y,
+                z: newPosition.z,
+                radius: PLAYER_RADIUS,
+                height: PLAYER_HEIGHT
+            };
+
+            for (let building of collisionObjects) {
+                if (building.userData.type === 'ground') {
+                    if (playerBounds.y - playerBounds.height <= 0 && velocity.y <= 0) {
+                        return {
+                            collision: true,
+                            surface: 'Ground',
+                            correctedY: playerBounds.height,
+                            object: building,
+                            sideCollision: false
+                        };
+                    }
+                } else if (building.userData.type === 'building') {
+                    const buildingBounds = {
+                        x: building.position.x,
+                        y: building.position.y,
+                        z: building.position.z,
+                        width: building.userData.width,
+                        height: building.userData.height,
+                        depth: building.userData.depth
+                    };
+
+                    const rooftopY = buildingBounds.y + buildingBounds.height / 2;
+                    const buildingBottomY = buildingBounds.y - buildingBounds.height / 2;
+                    const playerBottomY = playerBounds.y - playerBounds.height;
+                    const playerTopY = playerBounds.y;
+
+                    // Basic AABB check first for performance
+                    const intersectsHorizontally =
+                        Math.abs(playerBounds.x - buildingBounds.x) < (buildingBounds.width / 2 + playerBounds.radius) &&
+                        Math.abs(playerBounds.z - buildingBounds.z) < (buildingBounds.depth / 2 + playerBounds.radius);
+
+                    if (intersectsHorizontally) {
+                        // Check for Rooftop landing
+                        if (playerBottomY <= rooftopY && playerBottomY >= rooftopY - 2.0 && velocity.y <= 0) {
+                            if (velocity.y <= JUMP_VELOCITY_THRESHOLD) {
+                                return {
+                                    collision: true,
+                                    surface: building.userData.name || 'Rooftop',
+                                    correctedY: rooftopY + playerBounds.height,
+                                    object: building,
+                                    sideCollision: false
+                                };
+                            }
+                        }
+
+                        // Check for side wall collision
+                        if (playerTopY > buildingBottomY && playerBottomY < rooftopY) {
+                            const dx = playerBounds.x - buildingBounds.x;
+                            const dz = playerBounds.z - buildingBounds.z;
+                            const halfW = buildingBounds.width / 2;
+                            const halfD = buildingBounds.depth / 2;
+
+                            const overlapX = (halfW + playerBounds.radius) - Math.abs(dx);
+                            const overlapZ = (halfD + playerBounds.radius) - Math.abs(dz);
+
+                            const collisionNormal = new THREE.Vector3();
+                            let correctedPos = newPosition.clone();
+
+                            // Determine the shallowest axis of penetration to find the collision normal
+                            if (overlapX < overlapZ) {
+                                const sign = Math.sign(dx);
+                                collisionNormal.set(sign, 0, 0);
+                                correctedPos.x = buildingBounds.x + sign * (halfW + playerBounds.radius);
+                            } else {
+                                const sign = Math.sign(dz);
+                                collisionNormal.set(0, 0, sign);
+                                correctedPos.z = buildingBounds.z + sign * (halfD + playerBounds.radius);
+                            }
+
+                            return {
+                                collision: true,
+                                surface: 'Wall',
+                                sideCollision: true,
+                                correctedX: correctedPos.x,
+                                correctedZ: correctedPos.z,
+                                object: building,
+                                normal: collisionNormal
+                            };
+                        }
+                    }
+                } else if (building.userData.type === 'tree_trunk') {
+                    // Tree collision (cylindrical)
+                    const dx = playerBounds.x - building.position.x;
+                    const dz = playerBounds.z - building.position.z;
+                    const horizontalDistance = Math.sqrt(dx*dx + dz*dz);
+                    const combinedRadius = building.userData.radius + playerBounds.radius;
+                    
+                    if (horizontalDistance < combinedRadius) {
+                        const playerBottomY = playerBounds.y - playerBounds.height;
+                        const playerTopY = playerBounds.y;
+                        const treeTopY = building.userData.height;
+                        
+                        // Check if player is at tree height
+                        if (playerTopY > 0 && playerBottomY < treeTopY) {
+                            // Push player away from tree center
+                            const pushDirection = Math.atan2(dz, dx);
+                            const correctedX = building.position.x + Math.cos(pushDirection) * combinedRadius;
+                            const correctedZ = building.position.z + Math.sin(pushDirection) * combinedRadius;
+                            
+                            return {
+                                collision: true,
+                                surface: `${building.userData.treeType} Tree`,
+                                sideCollision: true,
+                                correctedX: correctedX,
+                                correctedZ: correctedZ,
+                                object: building,
+                                normal: new THREE.Vector3(Math.cos(pushDirection), 0, Math.sin(pushDirection))
+                            };
+                        }
+                    }
+                }
+            }
+
+            return { collision: false };
+        }
+
+        function updateMovement(delta) {
+            // Store original position
+            const originalPosition = yawObject.position.clone();
+            
+            // Apply gravity
+            velocity.y -= GRAVITY * delta;
+        
+            let hasAttachedHook = hooks.left.attached || hooks.right.attached;
+            
+            // Check for swing input while hooked
+            if (hasAttachedHook && gas > 0) {
+                if (moveLeft) {
+                    isSwinging = true;
+                    swingDirection = -1;
+                } else if (moveRight) {
+                    isSwinging = true;
+                    swingDirection = 1;
+                } else {
+                    isSwinging = false;
+                    swingDirection = 0;
+                }
+            } else {
+                isSwinging = false;
+                swingDirection = 0;
+            }
+        
+            if (hasAttachedHook) {
+                // ODM gear physics - process each hook
+                ['left', 'right'].forEach(side => {
+                    if (hooks[side].attached) {
+                        const hookPos = hooks[side].position;
+                        const playerPos = yawObject.position;
+                        
+                        // Check if mouse button is still held for this hook
+                        const isHeld = (side === 'left' && leftMouseDown) || (side === 'right' && rightMouseDown);
+                        
+                        if (isHeld) {
+                            // Track how long we've been holding
+                            hooks[side].holdTime += delta;
+                            
+                            // Smart retraction: only retract if conditions are safe
+                            const currentSpeed = Math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2);
+                            const shouldRetract = hooks[side].holdTime > RETRACT_DELAY && 
+                                                currentSpeed < RETRACT_SPEED_THRESHOLD &&
+                                                !isSwinging; // Don't retract while actively swinging
+                            
+                            if (shouldRetract) {
+                                // Tighten cord while held - reduce max length gradually
+                                const tightenRate = 20 * delta; // Tightening speed
+                                const currentDistance = playerPos.distanceTo(hookPos);
+                                
+                                // Only tighten if we're not already at minimum distance
+                                if (hooks[side].maxLength > Math.max(currentDistance - 5, MIN_CORD_LENGTH)) {
+                                    hooks[side].maxLength = Math.max(hooks[side].maxLength - tightenRate, 
+                                                                   Math.max(currentDistance - 5, MIN_CORD_LENGTH));
+                                }
+                            }
+                        } else {
+                            // Reset hold timer when not holding
+                            hooks[side].holdTime = 0;
+                        }
+                        
+                        // NEW: Dynamic cord tightening during swings
+                        if (isSwinging || Math.sqrt(velocity.x**2 + velocity.z**2) > 15) {
+                            // When swinging or moving fast horizontally, cord naturally tightens
+                            const tightenRate = CORD_TIGHTEN_RATE * delta;
+                            const targetLength = hooks[side].naturalLength;
+                            
+                            if (hooks[side].maxLength > targetLength) {
+                                hooks[side].maxLength = Math.max(hooks[side].maxLength - tightenRate, targetLength);
+                            }
+                        }
+                    
+                        // Update cord length
+                        hooks[side].length = playerPos.distanceTo(hookPos);
+                    
+                        // Calculate direction from player to hook point
+                        const toHook = new THREE.Vector3().subVectors(hookPos, playerPos);
+                        toHook.normalize();
+                    
+                        // Calculate the force vector
+                        const pullForceVector = toHook.multiplyScalar(HOOK_PULL_FORCE * delta);
+                    
+                        // Add the force to the velocity
+                        velocity.add(pullForceVector);
+                        
+                        // Apply swing mechanics
+                        if (isSwinging && gas > SWING_GAS_COST) {
+                            // Calculate perpendicular direction for swinging
+                            const playerToHook = new THREE.Vector3().subVectors(hookPos, playerPos);
+                            playerToHook.y = 0; // Project onto horizontal plane
+                            playerToHook.normalize();
+                            
+                            // Get perpendicular direction
+                            const swingDir = new THREE.Vector3();
+                            swingDir.x = -playerToHook.z * swingDirection;
+                            swingDir.z = playerToHook.x * swingDirection;
+                            swingDir.normalize();
+                            
+                            // Apply swing force
+                            const swingForceVector = swingDir.multiplyScalar(SWING_FORCE * delta);
+                            velocity.add(swingForceVector);
+                            
+                            // Use gas
+                            gas -= SWING_GAS_COST;
+                        }
+                        
+                        // Cord length constraint - prevent cord from stretching beyond max length
+                        if (hooks[side].length > hooks[side].maxLength) {
+                            // Pull player back to max cord length
+                            const dirToHook = new THREE.Vector3().subVectors(hookPos, playerPos).normalize();
+                            const correction = new THREE.Vector3().copy(dirToHook).multiplyScalar(hooks[side].length - hooks[side].maxLength);
+                            yawObject.position.add(correction);
+                            
+                            // Remove velocity component that extends the cord
+                            const velocityTowardHook = velocity.dot(dirToHook);
+                            if (velocityTowardHook < 0) { // Moving away from hook
+                                velocity.addScaledVector(dirToHook, -velocityTowardHook);
+                            }
+                        }
+                    
+                        // Update hook line
+                        if (hooks[side].line) {
+                            const positions = hooks[side].line.geometry.attributes.position.array;
+                            positions[0] = playerPos.x;
+                            positions[1] = playerPos.y;
+                            positions[2] = playerPos.z;
+                            positions[3] = hookPos.x;
+                            positions[4] = hookPos.y;
+                            positions[5] = hookPos.z;
+                            hooks[side].line.geometry.attributes.position.needsUpdate = true;
+                        }
+                    }
+                });
+            } else {
+                // Normal movement when not swinging - but preserve momentum in air!
+                if (isOnGround) {
+                    // Only apply heavy damping when on ground
+                    velocity.x -= velocity.x * GROUND_FRICTION * delta;
+                    velocity.z -= velocity.z * GROUND_FRICTION * delta;
+                } else {
+                    // Much lighter air resistance when flying - preserve momentum!
+                    velocity.x -= velocity.x * AIR_RESISTANCE * delta;
+                    velocity.z -= velocity.z * AIR_RESISTANCE * delta;
+                }
+            
+                // Calculate movement direction in world space
+                direction.set(0, 0, 0);
+                
+                if (moveForward) direction.z -= 1;
+                if (moveBackward) direction.z += 1;
+                if (moveLeft) direction.x -= 1;
+                if (moveRight) direction.x += 1;
+                
+                // Normalize direction
+                if (direction.length() > 0) {
+                    direction.normalize();
+                    
+                    // Transform direction to world space based on yaw rotation
+                    const worldDirection = new THREE.Vector3();
+                    worldDirection.copy(direction);
+                    worldDirection.applyAxisAngle(new THREE.Vector3(0, 1, 0), yawObject.rotation.y);
+                    
+                    // Apply movement - but reduce control when in air to make it more realistic
+                    const movementMultiplier = isOnGround ? 1.0 : AIR_CONTROL; // Less air control
+                    velocity.x += worldDirection.x * WALK_SPEED * delta * movementMultiplier;
+                    velocity.z += worldDirection.z * WALK_SPEED * delta * movementMultiplier;
+                }
+            }
+        
+            // Calculate new position
+            const newPosition = new THREE.Vector3(
+                yawObject.position.x + velocity.x * delta,
+                yawObject.position.y + velocity.y * delta,
+                yawObject.position.z + velocity.z * delta
+            );
+            
+            // Check for collisions
+            const collision = checkCollision(newPosition);
+            
+            if (collision.collision) {
+                if (collision.sideCollision) {
+                    // Side collision - stop horizontal movement and adjust position
+                    velocity.x = 0;
+                    velocity.z = 0;
+                    if (collision.correctedX !== undefined) yawObject.position.x = collision.correctedX;
+                    if (collision.correctedZ !== undefined) yawObject.position.z = collision.correctedZ;
+                    yawObject.position.y = newPosition.y; // Allow vertical movement
+                    currentSurface = collision.surface;
+                    isOnGround = false;
+                } else {
+                    // Rooftop or ground collision
+                    velocity.y = 0;
+                    yawObject.position.x = newPosition.x;
+                    yawObject.position.z = newPosition.z;
+                    yawObject.position.y = collision.correctedY;
+                    currentSurface = collision.surface;
+                    isOnGround = true;
+                }
+            } else {
+                // No collision - apply movement normally
+                yawObject.position.copy(newPosition);
+                
+                // Update surface based on location for better immersion
+                const distanceFromCenter = Math.sqrt(yawObject.position.x**2 + yawObject.position.z**2);
+                if (distanceFromCenter < CITY_RADIUS) {
+                    currentSurface = 'Air (City)';
+                } else if (distanceFromCenter < FOREST_START_RADIUS) {
+                    currentSurface = 'Air (Outskirts)';
+                } else {
+                    currentSurface = 'Air (Forest)';
+                }
+                isOnGround = false;
+            }
+        
+            // Regenerate gas
+            if (gas < 100) {
+                gas = Math.min(100, gas + GAS_REGEN_RATE);
+            }
+        }
+    
+        function updateUI() {
+            const pos = yawObject.position;
+            document.getElementById('position').textContent = 
+                `${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}`;
+    
+            const speed = Math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2);
+            document.getElementById('speed').textContent = speed.toFixed(1);
+            
+            const height = Math.max(0, pos.y - PLAYER_HEIGHT);
+            document.getElementById('height').textContent = height.toFixed(1);
+            
+            document.getElementById('surface').textContent = currentSurface;
+    
+            updateHookUI();
+        }
+    
+        let frameCount = 0;
+        let lastFpsUpdate = 0;
+    
+        function animate() {
+            requestAnimationFrame(animate);
+    
+            const time = performance.now();
+            const delta = (time - prevTime) / 1000;
+    
+            updateMovement(delta);
+            updateUI();
+    
+            // FPS counter
+            frameCount++;
+            if (time - lastFpsUpdate >= 1000) {
+                document.getElementById('fps').textContent = frameCount;
+                frameCount = 0;
+                lastFpsUpdate = time;
+            }
+    
+            // Add this line to slowly rotate the moon
+            if (moon) moon.rotation.y += 0.001;
+
+            renderer.render(scene, camera);
+            prevTime = time;
+        }
+    
+        // Start the game
+        init();
+    </script>
+</body>
+</html>
