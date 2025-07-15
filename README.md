@@ -3,7 +3,7 @@
 
 # Omni-directional mobility gear demo
 
-`#roguelike` `#javascript` `#browser-game` `#procedural-generation` `#component-based` `#data-driven` `#turn-based` `#dungeon-crawler` `#permadeath` `#rpg` `#ascii`
+`#javascript` `#browser-game` `#attack-on-titan` `#vide-coding` `omni-direction-mobility-gear`
 
 ## Licence 
 Creative Commons Attribution-NonCommercial 4.0 International License
