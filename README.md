@@ -19,6 +19,6 @@ https://github.com/integralyogin/lila_rl/blob/master/LICENSE.md
 </div>
 
 ## Play Online
-Play Lila RL at: [The Infinite Library](http://theinfinitelibrary.net/games/lila_rl/)
+Play ODMG at: [The Infinite Library](http://theinfinitelibrary.net/games/aot/)
 
 
